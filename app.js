@@ -15,7 +15,7 @@
 
   let storageOk = true;
 
-  const emptyData = () => ({ version: 1, nextId: 1, repairs: [], bookings: [], lastBackup: "" });
+  const emptyData = () => ({ version: 1, nextId: 1, repairs: [], bookings: [], lastBackup: "", updatedAt: 0 });
   const isDay = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) &&
     C.validDate(Number(s.slice(0, 4)), Number(s.slice(5, 7)), Number(s.slice(8, 10)));
   const isMoney = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= C.MAX_MONEY;
@@ -46,6 +46,7 @@
     }
     data.nextId = Math.max(maxId + 1, Number.isInteger(raw.nextId) ? raw.nextId : 1);
     data.lastBackup = isDay(raw.lastBackup) ? raw.lastBackup : "";
+    data.updatedAt = Number.isFinite(raw.updatedAt) && raw.updatedAt > 0 ? raw.updatedAt : 0;
     return data;
   }
 
@@ -70,7 +71,7 @@
   let data = load();
   let persistAsked = false;
 
-  function save() {
+  function saveLocal() {
     if (!storageOk) return false;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -83,6 +84,120 @@
       navigator.storage.persist().catch(() => {});
     }
     return true;
+  }
+
+  function save() {
+    data.updatedAt = Date.now();
+    const ok = saveLocal();
+    if (cloudSync && cloudReady) cloudSync.saveSoon(cloudSnapshot);
+    else if (cloudSync) syncWithCloud();
+    return ok;
+  }
+
+  // ------------------------------------------------------------ Telegram: облако и файлы
+
+  let tg = null;          // Telegram WebApp, если сайт открыт кнопкой меню бота
+  let cloudSync = null;   // облако Telegram для данных
+  let cloudReady = false; // писать в облако можно только после того, как прочитали его (иначе затрём чужие правки)
+  let cloudState = "";
+  let receivedFromTelegram = false;
+
+  const cloudSnapshot = () => ({
+    json: JSON.stringify({ version: 1, nextId: data.nextId, repairs: data.repairs, bookings: data.bookings,
+      lastBackup: data.lastBackup, updatedAt: data.updatedAt }),
+    updatedAt: data.updatedAt,
+  });
+
+  /** Сверяет телефон с облаком Telegram: что новее, то и остаётся. */
+  async function syncWithCloud() {
+    if (!cloudSync || cloudReady) return;
+    try {
+      const remote = await cloudSync.read();
+      cloudReady = true;
+      if (remote && remote.updatedAt > data.updatedAt) {
+        data = normalize(remote.data);
+        data.updatedAt = remote.updatedAt;
+        saveLocal();
+        render();
+      } else if (data.updatedAt && (!remote || data.updatedAt > remote.updatedAt)) {
+        cloudSync.saveSoon(cloudSnapshot);
+      }
+      cloudState = "saved";
+    } catch (e) {
+      console.error(e);
+      cloudState = "error"; // попробуем снова при следующем сохранении
+    }
+  }
+
+  function applyTelegramTheme() {
+    document.documentElement.dataset.theme = tg.colorScheme === "dark" ? "dark" : "light";
+    const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+    try {
+      if (tg.isVersionAtLeast("6.9")) { // шапка Telegram в цвет сайта
+        tg.setHeaderColor(bg);
+        tg.setBackgroundColor(bg);
+      }
+    } catch (e) { /* старый Telegram — оставляем как есть */ }
+  }
+
+  async function connectTelegram(app) {
+    tg = app;
+    try {
+      tg.ready();
+      tg.expand();
+    } catch (e) { /* не страшно */ }
+    applyTelegramTheme();
+    if (typeof tg.onEvent === "function") tg.onEvent("themeChanged", applyTelegramTheme);
+    if (tg.CloudStorage && tg.isVersionAtLeast && tg.isVersionAtLeast("6.9")) {
+      cloudSync = window.Tg.cloud(tg.CloudStorage);
+      cloudSync.onStateChange((state) => {
+        cloudState = state;
+        if (currentTab === "more") render();
+      });
+      await syncWithCloud();
+    }
+    render();
+  }
+
+  /** На телефоне Telegram не скачивает файлы — тогда переходим в браузер вместе с данными. */
+  const filesNeedBrowser = () => window.Tg.filesBlocked(tg);
+
+  async function openInBrowserWithData() {
+    const ok = await confirmBox("В Telegram на телефоне файлы не скачиваются. Открыть учёт в браузере вместе с твоими " +
+      "данными? Там можно скачать Excel, копию и добавить записи в календарь.", "Открыть в браузере");
+    if (!ok) return;
+    const payload = JSON.stringify({ app: "moto-uchet", version: 1, nextId: data.nextId, repairs: data.repairs,
+      bookings: data.bookings, updatedAt: data.updatedAt });
+    const packed = await window.Tg.packForUrl(payload);
+    if (packed.length > window.Tg.MAX_URL_DATA) {
+      throw new C.InputError("Данных слишком много, чтобы передать их в браузер. Скачай файлы из Telegram на компьютере.");
+    }
+    tg.openLink(`${location.origin}${location.pathname}#from-telegram=${packed}`);
+  }
+
+  /** Браузер открыли из Telegram с данными в ссылке — принимаем их, чтобы скачать файлы. */
+  async function receiveFromTelegram() {
+    const match = /^#from-telegram=([A-Za-z0-9_-]+)$/.exec(location.hash);
+    if (!match) return;
+    history.replaceState(null, "", location.pathname + location.search);
+    try {
+      const raw = JSON.parse(await window.Tg.unpackFromUrl(match[1]));
+      if (!raw || raw.app !== "moto-uchet") throw new C.InputError("bad");
+      const incoming = normalize(raw);
+      const hasLocal = data.repairs.length || data.bookings.length;
+      if (hasLocal && !(await confirmBox(`Загрузить данные из Telegram (${C.plural(incoming.repairs.length, C.REPAIRS_WORDS)}, ` +
+        `${C.plural(incoming.bookings.length, C.BOOKINGS_WORDS)}) в этот браузер? То, что сейчас хранится здесь ` +
+        `(${C.plural(data.repairs.length, C.REPAIRS_WORDS)}), будет заменено.`, "Загрузить"))) return;
+      incoming.lastBackup = data.lastBackup;
+      data = incoming;
+      saveLocal();
+      receivedFromTelegram = true;
+      currentTab = "more";
+      render();
+    } catch (e) {
+      console.error(e);
+      toast("Не получилось принять данные из Telegram — попробуй ещё раз.", true);
+    }
   }
 
   const stamp = () => new Date().toISOString();
@@ -393,6 +508,15 @@
       toast("Нет записей, которые можно добавить в календарь.");
       return;
     }
+    if (filesNeedBrowser()) {
+      if (bookings.length === 1) { // одну запись — сразу в Google Календарь
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        tg.openLink(window.Tg.googleCalendarUrl(bookings[0], C.addDays, timeZone));
+      } else {
+        safely(openInBrowserWithData);
+      }
+      return;
+    }
     const name = bookings.length === 1 ? `zapis-${bookings[0].day}.ics` : "zapisi-klientov.ics";
     downloadFile(C.makeIcs(bookings), name, "text/calendar;charset=utf-8");
     toast("📆 Открой скачанный файл — телефон предложит добавить в календарь.");
@@ -465,6 +589,7 @@
   }
 
   function backupReminder() {
+    if (cloudSync) return null; // в Telegram данные и так лежат в облаке
     // Напоминаем, если копии не было две недели — считая от первой записи, а не с первой же минуты.
     const created = [...data.repairs, ...data.bookings].map((x) => x.created.slice(0, 10)).filter(isDay).sort();
     if (!created.length) return null;
@@ -649,6 +774,10 @@
 
   async function exportMonth(y, m) {
     await safely(async () => {
+      if (filesNeedBrowser()) {
+        await openInBrowserWithData();
+        return;
+      }
       const repairs = repairsOfMonth(y, m);
       if (!repairs.length) throw new C.InputError(`За ${C.MONTHS[m - 1]} ${y} ремонтов нет — выгружать нечего.`);
       toast("Готовлю файл…");
@@ -660,6 +789,10 @@
 
   async function exportTemplate() {
     await safely(async () => {
+      if (filesNeedBrowser()) {
+        await openInBrowserWithData();
+        return;
+      }
       downloadFile(await window.ExcelIO.template(), window.ExcelIO.TEMPLATE_FILENAME);
       toast("📄 Заполни шаблон и загрузи его кнопкой «Загрузить из Excel».");
     });
@@ -686,6 +819,10 @@
   }
 
   function saveBackup() {
+    if (filesNeedBrowser()) {
+      safely(openInBrowserWithData);
+      return;
+    }
     const backup = { app: "moto-uchet", version: 1, exported: stamp(), repairs: data.repairs, bookings: data.bookings,
       nextId: data.nextId };
     downloadFile(JSON.stringify(backup, null, 1), `uchet-kopiya-${C.todayIso()}.json`, "application/json");
@@ -735,7 +872,17 @@
     const select = h("select", { "aria-label": "Месяц для выгрузки" },
       months.map(([y, m]) => h("option", { value: `${y}-${m}` }, C.monthTitle(y, m))));
     const upcoming = C.sortBookings(data.bookings.filter((b) => b.day >= C.todayIso()));
+    const cloudText = { saved: "данные сохранены в облаке Telegram", error: "сейчас нет связи — сохраню, как появится интернет" };
     return [
+      receivedFromTelegram ? card({ class: "alert" },
+        h("h2", {}, "📲 Данные из Telegram здесь"),
+        h("p", { class: "small" }, "Скачай что нужно ниже: Excel, копию или записи в календарь. Новые ремонты лучше " +
+          "вносить в Telegram — там они сохраняются в облаке.")) : null,
+      cloudSync ? card({},
+        h("h2", {}, "☁️ Облако Telegram"),
+        h("p", { class: "small" }, "Учёт открыт из Telegram: все записи автоматически сохраняются в облаке Telegram " +
+          "и одинаковы на всех твоих устройствах, где открываешь бота."),
+        h("p", { class: "small muted" }, cloudText[cloudState] || "подключаюсь…")) : null,
       card({},
         h("h2", {}, "📗 Excel"),
         h("p", { class: "small muted" }, "Выгрузи таблицу за месяц или загрузи ремонты из своего файла — повторы не добавятся."),
@@ -749,7 +896,8 @@
           h("button", { type: "button", onclick: exportTemplate }, "📄 Пустой шаблон"))),
       card({},
         h("h2", {}, "💾 Резервная копия"),
-        h("p", { class: "small" }, "Все записи хранятся только в этом браузере на этом устройстве. Сохраняй копию, " +
+        h("p", { class: "small" }, cloudSync ? "Копия — на всякий случай: файл со всеми записями, который можно хранить у себя."
+          : "Все записи хранятся только в этом браузере на этом устройстве. Сохраняй копию, " +
           "чтобы не потерять их при смене телефона или очистке браузера, и перешли её себе."),
         h("p", { class: "small muted" }, `Сейчас: ${C.plural(data.repairs.length, C.REPAIRS_WORDS)}, ` +
           `${C.plural(data.bookings.length, C.BOOKINGS_WORDS)}. ` +
@@ -764,7 +912,7 @@
         h("p", { class: "small" }, "А когда открываешь сайт, сверху сразу видно, кто записан на сегодня."),
         h("div", { class: "buttons" }, h("button", { type: "button", onclick: () => toCalendar(upcoming) },
           `📆 Все записи в календарь (${upcoming.length})`))),
-      card({},
+      tg ? null : card({},
         h("h2", {}, "📲 Как приложение"),
         installPrompt ? h("div", { class: "buttons" }, h("button", { type: "button", class: "primary", onclick: async () => {
           installPrompt.prompt();
@@ -815,8 +963,9 @@
       render();
     }
   });
-  // Вернулись к сайту на следующий день — обновляем «сегодня».
+  // Вернулись к сайту на следующий день — обновляем «сегодня». Уходим — сразу отправляем правки в облако.
   document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && cloudSync) cloudSync.flush();
     if (document.visibilityState === "visible" && !document.querySelector("dialog[open]")) render();
   });
 
@@ -827,4 +976,7 @@
   window.addEventListener("error", () => toast("Что-то пошло не так. Обнови страницу.", true));
 
   render();
+  receiveFromTelegram();
+  window.Tg.load().then((app) => app && connectTelegram(app));
+  window.MotoUchet = { connectTelegram }; // для проверки в браузере без настоящего Telegram
 })();

@@ -1,7 +1,7 @@
 /* Работа без интернета: все файлы версии лежат в кэше телефона одним комплектом.
    После любых изменений сайта подними номер версии в CACHE — телефоны скачают новый комплект целиком. */
-const CACHE = "moto-uchet-v2";
-const APP_FILES = ["./", "index.html", "app.css", "core.js", "excel.js", "app.js", "manifest.webmanifest",
+const CACHE = "moto-uchet-v3";
+const APP_FILES = ["./", "index.html", "app.css", "core.js", "excel.js", "telegram.js", "app.js", "manifest.webmanifest",
   "icon.svg", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (event) => {
