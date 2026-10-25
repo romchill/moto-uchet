@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Учёт ремонтов</title>
+  <meta name="description" content="Учёт ремонтов мототехники: сумма, запчасти, чистый доход, время и записи клиентов">
+  <meta name="theme-color" content="#1f6feb">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="app.css">
+  <script src="core.js" defer></script>
+  <script src="excel.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">🏍 Учёт ремонтов</div>
+    <div class="date" id="todayLabel"></div>
+  </header>
+
+  <main id="view" aria-live="polite">
+    <noscript><p class="card">Для работы сайта нужно включить JavaScript в браузере.</p></noscript>
+  </main>
+
+  <nav class="tabs" aria-label="Разделы">
+    <button type="button" data-tab="today" aria-label="Сегодня"><span class="ico" aria-hidden="true">📅</span><span>Сегодня</span></button>
+    <button type="button" data-tab="month" aria-label="Месяц"><span class="ico" aria-hidden="true">📊</span><span>Месяц</span></button>
+    <button type="button" data-tab="bookings" aria-label="Записи клиентов"><span class="ico" aria-hidden="true">📝</span><span>Записи</span></button>
+    <button type="button" data-tab="more" aria-label="Ещё"><span class="ico" aria-hidden="true">☰</span><span>Ещё</span></button>
+  </nav>
+
+  <dialog id="repairDialog">
+    <form id="repairForm" novalidate>
+      <h2 id="repairHeading">Новый ремонт</h2>
+      <label>Что ремонтировал
+        <input name="title" maxlength="200" placeholder="Yamaha R6, замена цепи" autocomplete="off">
+      </label>
+      <div class="row2">
+        <label>Общая сумма, ₽
+          <input name="total" inputmode="decimal" placeholder="5000" autocomplete="off">
+        </label>
+        <label>Запчасти, ₽
+          <input name="parts" inputmode="decimal" placeholder="0" autocomplete="off">
+        </label>
+      </div>
+      <label>Время на ремонт
+        <input name="time" placeholder="2:30 или 1.5" autocomplete="off">
+      </label>
+      <div class="chips" data-target="time">
+        <button type="button">30 мин</button><button type="button">1 ч</button><button type="button">1.5 ч</button>
+        <button type="button">2 ч</button><button type="button">3 ч</button><button type="button">4 ч</button>
+      </div>
+      <label>Дата
+        <input name="day" type="date">
+      </label>
+      <div class="calc" id="repairCalc"></div>
+      <p class="error" id="repairError" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="danger" id="repairDelete" hidden>🗑 Удалить</button>
+        <span class="spacer"></span>
+        <button type="button" class="ghost" data-close>Отмена</button>
+        <button type="submit" class="primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="bookingDialog">
+    <form id="bookingForm" novalidate>
+      <h2 id="bookingHeading">Запись клиента</h2>
+      <label>День
+        <input name="day" type="date">
+      </label>
+      <div class="chips" id="bookingDayChips"></div>
+      <label>Время
+        <input name="clock" type="time">
+      </label>
+      <div class="chips" id="bookingClockChips">
+        <button type="button">09:00</button><button type="button">10:00</button><button type="button">11:00</button>
+        <button type="button">12:00</button><button type="button">14:00</button><button type="button">16:00</button>
+        <button type="button">18:00</button><button type="button" data-value="">Без времени</button>
+      </div>
+      <label>Кто и что
+        <textarea name="text" rows="3" maxlength="300" placeholder="Иван, Yamaha R6, замена цепи, 8 900 123-45-67"></textarea>
+      </label>
+      <p class="error" id="bookingError" role="alert"></p>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="ghost" data-close>Отмена</button>
+        <button type="submit" class="primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog">
+    <form method="dialog">
+      <p id="confirmText"></p>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button value="no" class="ghost">Отмена</button>
+        <button value="yes" class="primary" id="confirmYes">Да</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <input type="file" id="fileInput" hidden>
+</body>
+</html>
